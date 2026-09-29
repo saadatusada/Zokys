@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trivis</title>
+    <link rel="stylesheet" href="styles/style.css" />
+    <style>
+      .trivis-popup-msg {
+        padding: 28px 20px 32px;
+        text-align: center;
+      }
+      .trivis-popup-msg h2 {
+        font-size: 18px;
+        font-weight: 800;
+        color: #DD0D10;
+        margin-bottom: 8px;
+      }
+      .trivis-popup-msg p {
+        font-size: 13px;
+        color: var(--lovable-text-secondary);
+        line-height: 1.5;
+        margin-bottom: 6px;
+      }
+      .trivis-popup-msg .hint {
+        font-size: 12px;
+        color: var(--lovable-text-muted);
+        margin-top: 14px;
+        line-height: 1.45;
+      }
+      .trivis-popup-msg .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #3fb950;
+        margin-right: 6px;
+        vertical-align: middle;
+        box-shadow: 0 0 6px rgba(63,185,80,0.5);
+      }
+    </style>
+  </head>
+  <body class="sp-extension-page">
+    <div id="sp-app-root">
+      <div class="sp-header">
+        <div class="sp-brand">
+          <img class="sp-brand-logo" src="assets/logo-square.png" alt="Trivis" />
+          <span class="sp-brand-text">Trivis</span>
+        </div>
+      </div>
+      <div class="sp-body">
+        <div class="trivis-popup-msg">
+          <h2>Trivis is ready</h2>
+          <p><span class="dot"></span>Open <strong>lovable.dev</strong></p>
+          <p>A small icon appears at the bottom of the page.</p>
+          <p class="hint">
+            Click the icon → enter Gmail ID + License key → Activate.<br>
+            The panel opens inside Lovable. Drag the icon anywhere you like.
+          </p>
+        </div>
+      </div>
+      <div class="sp-footer">
+        <span class="sp-footer-badge">Trivis</span>
+      </div>
+    </div>
+  </body>
+</html>
