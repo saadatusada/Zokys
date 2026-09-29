@@ -14,8 +14,8 @@ const THEME_KEY = "zokys_remote_theme";
 const FEATURES_KEY = "zokys_remote_features";
 
 const ZOKYS_BASE = "https://zokysvx.lovable.app";
-const TRIVIS_API = ZOKYS_BASE + "/api/public/validate-license";
-const TRIVIS_API_FALLBACK = ZOKYS_BASE + "/api/validate-license";
+const HAPPY_LICENSE_API = "https://happy-little101.lovable.app/api/public/v1/licenses";
+const HAPPY_PRODUCT_IDENTIFIER = "browser-extension-core";
 const EXTENSION_STATUS_API = ZOKYS_BASE + "/api/public/extension-status";
 const EXTENSION_STATUS_API_FALLBACK = ZOKYS_BASE + "/api/extension-status";
 const SWITCH_API = ZOKYS_BASE + "/api/public/switch-account";
@@ -26,8 +26,6 @@ const METHOD_BUNDLE_API = ZOKYS_BASE + "/api/public/method-bundle";
 const CONSUME_SEND_API = ZOKYS_BASE + "/api/public/consume-send";
 const HEARTBEAT_API = ZOKYS_BASE + "/api/public/heartbeat";
 const HEARTBEAT_API_FALLBACK = ZOKYS_BASE + "/api/heartbeat";
-/* Accept ZOKYS-XXXX-XXXX-XXXX and legacy TRIVIS-XXXX-XXXX */
-const KEY_RE = /^(ZOKYS|TRIVIS|REMAX94)-[A-Z0-9]{4}-[A-Z0-9]{4}(-[A-Z0-9]{4})?$/i;
 const TOKEN_KEY = "trivis_license_key";
 const OK_KEY = "trivis_lic_ok";
 const SESSION_KEY = "trivis_lic_session";
@@ -98,6 +96,64 @@ function deviceId() {
   });
 }
 
+async function requestHappyLicense(operation, licenseKey, deviceIdentifier) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(HAPPY_LICENSE_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation,
+        licenseKey,
+        productIdentifier: HAPPY_PRODUCT_IDENTIFIER,
+        deviceIdentifier
+      }),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => null);
+    if (!data || typeof data.valid !== "boolean" || typeof data.status !== "string") {
+      return { valid: false, status: "unavailable", httpStatus: response.status };
+    }
+    if (data.valid && data.status === "active" &&
+        (typeof data.expiresAt !== "string" || !Number.isFinite(Date.parse(data.expiresAt)))) {
+      return { valid: false, status: "unavailable", httpStatus: response.status };
+    }
+    return { ...data, httpStatus: response.status };
+  } catch (error) {
+    return {
+      valid: false,
+      status: error && error.name === "AbortError" ? "timeout" : "unavailable"
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function activateHappyLicense(licenseKey, deviceIdentifier) {
+  const checked = await requestHappyLicense("check", licenseKey, deviceIdentifier);
+  if (checked.valid && checked.status === "active") return checked;
+  if (checked.status !== "device_mismatch") return checked;
+
+  const activated = await requestHappyLicense("activate", licenseKey, deviceIdentifier);
+  if (!activated.valid || activated.status !== "active") return activated;
+  return requestHappyLicense("check", licenseKey, deviceIdentifier);
+}
+
+function licenseError(status) {
+  const messages = {
+    invalid: "Invalid license key",
+    invalid_request: "Invalid license request",
+    device_mismatch: "License is not active on this device",
+    device_limit_reached: "License device limit reached",
+    expired: "License expired",
+    revoked: "License revoked",
+    rate_limited: "Too many license attempts. Please try again shortly",
+    unavailable: "License service unavailable",
+    timeout: "License service timed out"
+  };
+  return messages[status] || "License validation failed";
+}
 
 async function applyRemoteControl(data) {
   if (!data || typeof data !== "object") return;
@@ -158,81 +214,30 @@ async function revalidateFromServer() {
   }
 
   const key = String(r[TOKEN_KEY]).trim().toUpperCase();
-  if (!KEY_RE.test(key)) {
-    await clearLicense();
-    return { ok: false, reason: "bad_key" };
-  }
-
-  try {
-    const dev = await deviceId();
-    const name = String(r[NAME_KEY] || "Zokys User").slice(0, 64);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 12000);
-    let resp;
-    try {
-      resp = await fetch(TRIVIS_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, deviceId: dev, name, recheck: true }),
-        signal: ctrl.signal
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    let data = await resp.json().catch(() => null);
-    if ((!data || !data.ok) && typeof TRIVIS_API_FALLBACK !== "undefined") {
-      try {
-        const resp2 = await fetch(TRIVIS_API_FALLBACK, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, deviceId: dev, name, recheck: true })
-        });
-        const data2 = await resp2.json().catch(() => null);
-        if (data2 && data2.ok) data = data2;
-      } catch (_) {}
-    }
-    try { if (data && data.ok) await applyRemoteControl(data); } catch (_) {}
-
-    // Explicit invalid from server → kill session (ban / revoke / device limit)
-    if (data && data.ok === false) {
-      await clearLicense();
-      return {
-        ok: false,
-        reason: "revoked",
-        error: data.error || data.message || "License revoked"
-      };
-    }
-
-    // HTTP hard fail that clearly means banned (401/403)
-    if (resp.status === 401 || resp.status === 403) {
-      await clearLicense();
-      return { ok: false, reason: "revoked", error: "License revoked" };
-    }
-
-    // Network / 5xx / parse fail → keep session (offline safe)
-    if (!resp.ok || !data) {
-      await chrome.storage.local.set({ [LAST_CHECK_KEY]: Date.now() });
-      return { ok: true, reason: "network_keep" };
-    }
-
-    // Server OK — refresh expiry / name if provided
+  const result = await requestHappyLicense("check", key, await deviceId());
+  if (result.valid && result.status === "active") {
     const patch = { [LAST_CHECK_KEY]: Date.now(), [OK_KEY]: true };
-    if (data.expires_at) patch[EXP_KEY] = data.expires_at;
-    if (data.user_name) patch[NAME_KEY] = data.user_name;
-    if (data.session) patch[SESSION_KEY] = data.session;
+    if (result.expiresAt) patch[EXP_KEY] = result.expiresAt;
     await chrome.storage.local.set(patch);
-
     return {
       ok: true,
       reason: "revalidated",
-      expires_at: data.expires_at || r[EXP_KEY] || null,
-      name: data.user_name || r[NAME_KEY] || null
+      expires_at: result.expiresAt || r[EXP_KEY] || null,
+      name: r[NAME_KEY] || null
     };
-  } catch (_) {
-    // Offline / abort → keep session
+  }
+
+  if (["rate_limited", "unavailable", "timeout"].includes(result.status)) {
+    await chrome.storage.local.set({ [LAST_CHECK_KEY]: Date.now() });
     return { ok: true, reason: "network_keep" };
   }
+
+  await clearLicense();
+  return {
+    ok: false,
+    reason: result.status,
+    error: licenseError(result.status)
+  };
 }
 
 function isLovableProjectUrl(url) {
@@ -619,59 +624,36 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const key = String(msg.key || "").trim().toUpperCase();
         const name = String(msg.name || "").trim().slice(0, 64);
         const dev = await deviceId();
-        if (!KEY_RE.test(key)) {
-          sendResponse({ ok: false, error: "Format: ZOKYS-XXXX-XXXX-XXXX" });
+        if (!key) {
+          sendResponse({ ok: false, error: "Enter a license key" });
           return;
         }
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 15000);
-        let resp;
-        try {
-          resp = await fetch(TRIVIS_API, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key, deviceId: dev, name }),
-            signal: ctrl.signal
-          });
-        } finally {
-          clearTimeout(t);
-        }
-        let data = await resp.json().catch(() => null);
-        if ((!data || !data.ok) && typeof TRIVIS_API_FALLBACK !== "undefined") {
-          try {
-            const resp2 = await fetch(TRIVIS_API_FALLBACK, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key, deviceId: dev, name })
-            });
-            const data2 = await resp2.json().catch(() => null);
-            if (data2 && data2.ok) data = data2;
-          } catch (_) {}
-        }
-        try { if (data && data.ok) await applyRemoteControl(data); } catch (_) {}
-        if (!data || !data.ok) {
+        const result = await activateHappyLicense(key, dev);
+        if (!result.valid || result.status !== "active") {
           sendResponse({
             ok: false,
-            error: (data && (data.error || data.message)) || "HTTP " + resp.status
+            error: licenseError(result.status),
+            reason: result.status
           });
           return;
         }
+        const previous = await chrome.storage.local.get([NAME_KEY]);
         const patch = {
           [TOKEN_KEY]: key,
           [OK_KEY]: true,
-          [SESSION_KEY]: data.session || "sess_" + Date.now(),
-          [NAME_KEY]: data.user_name || name || "Trivis User",
+          [SESSION_KEY]: "sess_" + Date.now(),
+          [NAME_KEY]: name || previous[NAME_KEY] || "Trivis User",
           [LAST_CHECK_KEY]: Date.now()
         };
-        if (data.expires_at) patch[EXP_KEY] = data.expires_at;
+        if (result.expiresAt) patch[EXP_KEY] = result.expiresAt;
+        else delete patch[EXP_KEY];
         await chrome.storage.local.set(patch);
-        try { await applyLockState(data); } catch (_) {}
         await injectFreezeAllLovableTabs();
         scheduleHeartbeat();
         sendResponse({
           ok: true,
           session: patch[SESSION_KEY],
-          expires_at: data.expires_at || null,
+          expires_at: result.expiresAt || null,
           user_name: patch[NAME_KEY],
           name: patch[NAME_KEY],
           key
@@ -1029,7 +1011,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === "TRIVIS_LOGOUT") {
-    clearLicense().then(() => sendResponse({ ok: true }));
+    (async () => {
+      const stored = await chrome.storage.local.get([TOKEN_KEY, DEVICE_KEY]);
+      if (stored[TOKEN_KEY]) {
+        await requestHappyLicense(
+          "deactivate",
+          String(stored[TOKEN_KEY]).trim().toUpperCase(),
+          stored[DEVICE_KEY] || await deviceId()
+        );
+      }
+      await clearLicense();
+      sendResponse({ ok: true });
+    })().catch(async () => {
+      await clearLicense();
+      sendResponse({ ok: true });
+    });
     return true;
   }
 
