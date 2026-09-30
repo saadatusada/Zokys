@@ -419,18 +419,10 @@
     }, 90000);
   }
 
-  window.__zokysChatSendTxt = async function (userText, opts) {
+  async function sendChatText(userText, opts) {
     opts = opts || {};
     if (!userText || !String(userText).trim()) return false;
     if (!/\/projects\//i.test(location.pathname || "")) return false;
-
-    /* Cooldown first — no token burn, no anim if blocked */
-    var blocked = await new Promise(function (res) {
-      if (typeof window.__zokysChatLimitBlocked === "function") {
-        window.__zokysChatLimitBlocked(function (b) { res(!!b); });
-      } else res(false);
-    });
-    if (blocked) return false;
 
     try {
       if (typeof window.__zokysSendAnimShow === "function") {
@@ -522,8 +514,6 @@
     if (opts.autoSend === false) return true;
 
     // Wait until Lovable send is actually available, then one click
-    if (sendingLock) return false;
-    sendingLock = true;
     var ok = false;
     try {
       ok = await waitForSendReady(composer, 12000);
@@ -531,9 +521,6 @@
       try {
         setComposerText(composer, "");
       } catch (_) {}
-      if (ok && typeof window.__zokysChatLimitRecordSend === "function") {
-        window.__zokysChatLimitRecordSend(function () {});
-      }
       if (ok) {
         try {
           startDedupeWatch(10000);
@@ -548,10 +535,17 @@
       try {
         if (typeof window.__zokysSendAnimHide === "function") window.__zokysSendAnimHide();
       } catch (_) {}
-      setTimeout(function () {
-        sendingLock = false;
-      }, 2000);
     }
     return !!ok;
+  }
+
+  window.__zokysChatSendTxt = async function (userText, opts) {
+    if (sendingLock) return false;
+    sendingLock = true;
+    try {
+      return await sendChatText(userText, opts);
+    } finally {
+      sendingLock = false;
+    }
   };
 })();

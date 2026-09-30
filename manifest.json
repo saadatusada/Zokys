@@ -64,7 +64,6 @@
         "scripts/content/trivis-vx-bar.js",
         "scripts/content/zokys-switch-login.js",
         "scripts/content/zokys-global-lock.js",
-        "scripts/content/zokys-chat-limit.js",
         "scripts/content/zokys-send-anim.js",
         "scripts/content/zokys-chat-send.js",
         "scripts/content/zokys-download-source.js",
