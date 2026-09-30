@@ -59,6 +59,7 @@ const HUB_FREEZE_ISOLATED = [];
 
 const FREEZE_SCRIPTS_MAIN = ZOKYS_FREEZE_MAIN;
 const FREEZE_SCRIPTS_ISOLATED = ZOKYS_FREEZE_ISOLATED;
+const freezeInjections = new Map();
 
 async function getMethodMode() {
   try {
@@ -250,6 +251,19 @@ function isLovableProjectUrl(url) {
 }
 
 async function injectFreezeIntoTab(tabId, tabUrl) {
+  const activeInjection = freezeInjections.get(tabId);
+  if (activeInjection) return activeInjection;
+
+  const injection = injectFreezeIntoTabOnce(tabId, tabUrl);
+  freezeInjections.set(tabId, injection);
+  try {
+    return await injection;
+  } finally {
+    if (freezeInjections.get(tabId) === injection) freezeInjections.delete(tabId);
+  }
+}
+
+async function injectFreezeIntoTabOnce(tabId, tabUrl) {
   try {
     if (tabUrl && !isLovableProjectUrl(tabUrl)) return;
     if (!tabUrl) {
@@ -288,7 +302,11 @@ async function injectFreezeIntoTab(tabId, tabUrl) {
     if (chk2 && chk2[0] && chk2[0].result === true) return;
   } catch (_) {}
 
-  // Mark BEFORE inject so parallel onUpdated cannot double-run
+  const mode = await getMethodMode();
+  const mainFiles = mode === "hub" ? HUB_FREEZE_MAIN : ZOKYS_FREEZE_MAIN;
+  const isoFiles = mode === "hub" ? HUB_FREEZE_ISOLATED : ZOKYS_FREEZE_ISOLATED;
+  let injectionOk = true;
+
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
@@ -299,21 +317,21 @@ async function injectFreezeIntoTab(tabId, tabUrl) {
         } catch (e) {}
       }
     });
-  } catch (_) {}
+  } catch (_) {
+    return false;
+  }
 
-  const mode = await getMethodMode();
-  const mainFiles = mode === "hub" ? HUB_FREEZE_MAIN : ZOKYS_FREEZE_MAIN;
-  const isoFiles = mode === "hub" ? HUB_FREEZE_ISOLATED : ZOKYS_FREEZE_ISOLATED;
-
-  try {
-    for (const file of mainFiles) {
+  for (const file of mainFiles) {
+    try {
       await chrome.scripting.executeScript({
         target: { tabId, allFrames: false },
         files: [file],
         world: "MAIN"
       });
+    } catch (_) {
+      injectionOk = false;
     }
-  } catch (_) {}
+  }
 
   try {
     if (isoFiles && isoFiles.length) {
@@ -323,7 +341,9 @@ async function injectFreezeIntoTab(tabId, tabUrl) {
         world: "ISOLATED"
       });
     }
-  } catch (_) {}
+  } catch (_) {
+    injectionOk = false;
+  }
 
   try {
     await chrome.scripting.executeScript({
@@ -332,6 +352,21 @@ async function injectFreezeIntoTab(tabId, tabUrl) {
       world: "MAIN"
     });
   } catch (_) {}
+
+  if (!injectionOk) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: false },
+        world: "MAIN",
+        func: function () {
+          try {
+            window.__ZOKYS_FREEZE_INJECTED__ = false;
+          } catch (e) {}
+        }
+      });
+    } catch (_) {}
+    return false;
+  }
 
   try {
     await chrome.scripting.executeScript({
@@ -345,6 +380,7 @@ async function injectFreezeIntoTab(tabId, tabUrl) {
       }
     });
   } catch (_) {}
+  return true;
 }
 
 
